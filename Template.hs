@@ -25,6 +25,7 @@ type TiHeap = Heap Node
 data Node = NAp Addr Addr
           | NSupercomb Name [Name] CoreExpr
           | NNum Int
+          | NInd Addr
 
 type TiGlobals = ASSOC Name Addr
 
@@ -81,6 +82,7 @@ step state = dispatch (hLookup heap (head stack))
           dispatch (NNum n) = numStep state n
           dispatch (NAp a1 a2) = apStep state a1 a2
           dispatch (NSupercomb sc args body) = scStep state sc args body
+          dispatch (NInd addr) = indStep state addr
 
 numStep :: TiState -> Int -> TiState
 numStep _ _ = error "Number applied as a function!"
@@ -88,13 +90,18 @@ numStep _ _ = error "Number applied as a function!"
 apStep :: TiState -> Addr -> Addr -> TiState
 apStep (stack,dump,heap,globals,stats) a1 _ = (a1:stack,dump,heap,globals,stats)
 
+indStep :: TiState -> Addr -> TiState
+indStep ([],_,_,_,_) _ = error "indStep: cannot reach here"
+indStep (_:stack,dump,heap,globals,stats) a = (a:stack,dump,heap,globals,stats)
+
 scStep :: TiState -> Name -> [Name] -> CoreExpr -> TiState
 scStep (stack,dump,heap,globals,stats) name arg_names body =
     if length arg_names + 1 > length stack
        then error (name ++ " is applied to too few arguments!")
-       else (new_stack,dump,new_heap,globals,stats)
+       else (new_stack,dump,update_heap,globals,stats)
         where new_stack = result_addr : drop (length arg_names + 1) stack
               (new_heap, result_addr) = instantiate body heap env
+              update_heap = hUpdate new_heap (head (drop (length arg_names) stack)) (NInd result_addr)
               env = arg_bindings ++ globals
               arg_bindings = zip arg_names (getargs heap stack)
 
@@ -157,6 +164,7 @@ showNode (NAp a1 a2) = iConcat [ iStr "NAp ", showAddr a1,
 
 showNode (NSupercomb name _ _) = iStr ("NSupercomb " ++ name)
 showNode (NNum n) = iStr "NNum " `iAppend` iNum n
+showNode (NInd addr) = iStr "NInd " `iAppend` showAddr addr
 
 showAddr :: Addr -> Iseq
 showAddr addr = iStr (show addr)
