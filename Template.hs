@@ -29,14 +29,35 @@ data Node = NAp Addr Addr
 
 type TiGlobals = ASSOC Name Addr
 
-tiStatInitial :: TiStats
-tiStatIncSteps :: TiStats -> TiStats
-tiStatGetSteps :: TiStats -> Int
 
-type TiStats = Int
-tiStatInitial = 0
-tiStatIncSteps = (+1)
-tiStatGetSteps = id
+type TiStats = (TiSteps,TiScReducs,TiPrReducs,TiMaxStack)
+type TiSteps = Int
+type TiScReducs = Int
+type TiPrReducs = Int
+type TiMaxStack = Int
+
+tiStatInitial :: TiStats
+tiStatInitial = (0,0,0,1)
+
+tiStatIncSteps :: TiStats -> TiStats
+tiStatIncSteps (a,b,c,d) = (a+1,b,c,d)
+tiStatGetSteps :: TiStats -> Int
+tiStatGetSteps (a,_,_,_) = a
+
+tiStatIncScReducs :: TiStats -> TiStats
+tiStatIncScReducs (a,b,c,d) = (a,b+1,c,d)
+tiStatGetScReducs :: TiStats -> Int
+tiStatGetScReducs (_,b,_,_) = b
+
+tiStatIncPrReducs :: TiStats -> TiStats
+tiStatIncPrReducs (a,b,c,d) = (a,b,c+1,d)
+tiStatGetPrReducs :: TiStats -> Int
+tiStatGetPrReducs (_,_,c,_) = c
+
+tiStatIncMaxStack :: TiStats -> TiStats
+tiStatIncMaxStack (a,b,c,d) = (a,b,c,d+1)
+tiStatGetMaxStack :: TiStats -> Int
+tiStatGetMaxStack (_,_,_,d) = d
 
 applyToStats :: (TiStats -> TiStats) -> TiState -> TiState
 applyToStats f (stack, dump, heap, sc_defs, stats) = (stack, dump, heap, sc_defs, f stats)
@@ -88,7 +109,7 @@ numStep :: TiState -> Int -> TiState
 numStep _ _ = error "Number applied as a function!"
 
 apStep :: TiState -> Addr -> Addr -> TiState
-apStep (stack,dump,heap,globals,stats) a1 _ = (a1:stack,dump,heap,globals,stats)
+apStep (stack,dump,heap,globals,stats) a1 _ = (a1:stack,dump,heap,globals,if length stack == tiStatGetMaxStack stats then tiStatIncMaxStack stats else stats)
 
 indStep :: TiState -> Addr -> TiState
 indStep ([],_,_,_,_) _ = error "indStep: cannot reach here"
@@ -98,7 +119,7 @@ scStep :: TiState -> Name -> [Name] -> CoreExpr -> TiState
 scStep (stack,dump,heap,globals,stats) name arg_names body =
     if length arg_names + 1 > length stack
        then error (name ++ " is applied to too few arguments!")
-       else (new_stack,dump,update_heap,globals,stats)
+       else (new_stack,dump,update_heap,globals,tiStatIncScReducs stats)
         where new_stack = result_addr : drop (length arg_names + 1) stack
               (new_heap, result_addr) = instantiate body heap env
               update_heap = hUpdate new_heap (head (drop (length arg_names) stack)) (NInd result_addr)
@@ -110,7 +131,14 @@ getargs _ [] = error "getargs: empty stack"
 getargs heap (_:stack) = map get_arg stack
     where get_arg addr = arg where (NAp _ arg) = hLookup heap addr
 
-instantiate :: CoreExpr -> TiHeap -> ASSOC Name Addr -> (TiHeap, Addr)
+instantiateAndUpdate :: CoreExpr -> Addr -> TiHeap -> TiGlobals -> TiHeap
+instantiateAndUpdate (EAp e1 e2) addr heap env = hUpdate heap2 addr (NAp a1 a2)
+    where (heap1, a1) = instantiate e1 heap env
+          (heap2, a2) = instantiate e2 heap1 env
+
+instantiateAndUpdate _ _ _ _ = undefined
+
+instantiate :: CoreExpr -> TiHeap -> TiGlobals -> (TiHeap, Addr)
 
 instantiate (ENum n) heap _ = hAlloc heap (NNum n)
 
@@ -127,12 +155,12 @@ instantiate _ _ _ = undefined
 
 instantiateConstr :: a -> b -> c -> d -> e
 instantiateConstr _ _ _ _ = error "Cannot instantiate constructors yet"
-instantiateLet :: IsRec -> [(Name, CoreExpr)] -> CoreExpr -> TiHeap -> ASSOC Name Addr -> (TiHeap, Addr)
+instantiateLet :: IsRec -> [(Name, CoreExpr)] -> CoreExpr -> TiHeap -> TiGlobals -> (TiHeap, Addr)
 instantiateLet _ defs body heap env = instantiate body new_heap new_env
     where new_env = nenv ++ env
           (new_heap, nenv) = instantiateDefs defs heap new_env
 
-instantiateDefs :: [(Name, CoreExpr)] -> TiHeap -> ASSOC Name Addr -> (TiHeap, ASSOC Name Addr)
+instantiateDefs :: [(Name, CoreExpr)] -> TiHeap -> TiGlobals -> (TiHeap, TiGlobals)
 instantiateDefs defs heap env = mapAccuml instantiateDef heap defs
     where instantiateDef h def = (fheap, (fst def, addr))
             where (fheap,addr) = instantiate (snd def) h env
@@ -174,4 +202,11 @@ showFWAddr addr = iStr (replicate (4 - length str) ' ' ++ str)
     where str = show addr
 
 showStats :: TiState -> Iseq
-showStats (_, _, _, _, stats) = iConcat [ iNewline, iNewline, iStr "Total number of steps = ", iNum (tiStatGetSteps stats), iNewline ]
+showStats (_, _, heap, _, stats) = iConcat [ iNewline, iNewline,
+                                          iStr "Total number of steps = ", iNum (tiStatGetSteps stats), iNewline,
+                                          iStr "Total number of heap allocations = ", iNum (getHeapAlloc heapStats), iNewline,
+                                          iStr "Total number of heap updates = ", iNum (getHeapUpdate heapStats), iNewline,
+                                          iStr "Total number of heap frees = ", iNum (getHeapFree heapStats), iNewline,
+                                          iStr "Total number of max stack depth = ", iNum (tiStatGetMaxStack stats), iNewline,
+                                          iStr "Total number of supercombinator reductions = ", iNum (tiStatGetScReducs stats), iNewline ]
+                                              where heapStats = getHeapStats heap
