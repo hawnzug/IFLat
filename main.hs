@@ -3,7 +3,7 @@ module Main where
 import Template
 
 main :: IO ()
-main = putStr (runProg sample1)
+main = putStr (runProg sample)
 
 
 sample :: String

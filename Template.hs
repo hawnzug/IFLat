@@ -119,12 +119,14 @@ scStep :: TiState -> Name -> [Name] -> CoreExpr -> TiState
 scStep (stack,dump,heap,globals,stats) name arg_names body =
     if length arg_names + 1 > length stack
        then error (name ++ " is applied to too few arguments!")
-       else (new_stack,dump,update_heap,globals,tiStatIncScReducs stats)
-        where new_stack = result_addr : drop (length arg_names + 1) stack
-              (new_heap, result_addr) = instantiate body heap env
-              update_heap = hUpdate new_heap (head (drop (length arg_names) stack)) (NInd result_addr)
-              env = arg_bindings ++ globals
-              arg_bindings = zip arg_names (getargs heap stack)
+       else (new_stack,dump,new_heap,globals,tiStatIncScReducs stats)
+           where -- new_stack = result_addr : drop (length arg_names + 1) stack
+                 -- (new_heap, result_addr) = instantiate body heap env
+                 -- update_heap = hUpdate new_heap (head (drop (length arg_names) stack)) (NInd result_addr)
+                 env = arg_bindings ++ globals
+                 arg_bindings = zip arg_names (getargs heap stack)
+                 new_stack = drop (length arg_names) stack
+                 new_heap = instantiateAndUpdate body (head new_stack) heap env
 
 getargs :: TiHeap -> TiStack -> [Addr]
 getargs _ [] = error "getargs: empty stack"
@@ -132,11 +134,28 @@ getargs heap (_:stack) = map get_arg stack
     where get_arg addr = arg where (NAp _ arg) = hLookup heap addr
 
 instantiateAndUpdate :: CoreExpr -> Addr -> TiHeap -> TiGlobals -> TiHeap
+
+instantiateAndUpdate (ENum n) addr heap _ = hUpdate heap addr (NNum n)
+
+instantiateAndUpdate (EVar v) addr heap env = hUpdate heap addr (NInd (aLookup env v (error ("Undefined name " ++ show v))))
+
 instantiateAndUpdate (EAp e1 e2) addr heap env = hUpdate heap2 addr (NAp a1 a2)
     where (heap1, a1) = instantiate e1 heap env
           (heap2, a2) = instantiate e2 heap1 env
 
+instantiateAndUpdate (ELet _ defs body) addr heap env = instantiateAndUpdateLet defs body addr heap env
+
 instantiateAndUpdate _ _ _ _ = undefined
+
+instantiateAndUpdateLet :: [(Name, CoreExpr)] -> CoreExpr -> Addr -> TiHeap -> TiGlobals -> TiHeap
+instantiateAndUpdateLet defs body addr heap env = instantiateAndUpdate body addr new_heap new_env
+    where new_env = nenv ++ env
+          (new_heap, nenv) = instantiateAndUpdateDefs defs addr heap new_env
+
+instantiateAndUpdateDefs :: [(Name, CoreExpr)] -> Addr -> TiHeap -> TiGlobals -> (TiHeap, TiGlobals)
+instantiateAndUpdateDefs defs _ heap env = mapAccuml instantiateDef heap defs
+    where instantiateDef h def = (fheap, (fst def, addr))
+            where (fheap,addr) = instantiate (snd def) h env
 
 instantiate :: CoreExpr -> TiHeap -> TiGlobals -> (TiHeap, Addr)
 
@@ -150,13 +169,14 @@ instantiate (EVar v) heap env = (heap, aLookup env v (error ("Undefined name " +
 
 instantiate (EConstr tag arity) heap env = instantiateConstr tag arity heap env
 
-instantiate (ELet isrec defs body) heap env = instantiateLet isrec defs body heap env
+instantiate (ELet _ defs body) heap env = instantiateLet defs body heap env
+
 instantiate _ _ _ = undefined
 
 instantiateConstr :: a -> b -> c -> d -> e
 instantiateConstr _ _ _ _ = error "Cannot instantiate constructors yet"
-instantiateLet :: IsRec -> [(Name, CoreExpr)] -> CoreExpr -> TiHeap -> TiGlobals -> (TiHeap, Addr)
-instantiateLet _ defs body heap env = instantiate body new_heap new_env
+instantiateLet :: [(Name, CoreExpr)] -> CoreExpr -> TiHeap -> TiGlobals -> (TiHeap, Addr)
+instantiateLet defs body heap env = instantiate body new_heap new_env
     where new_env = nenv ++ env
           (new_heap, nenv) = instantiateDefs defs heap new_env
 
