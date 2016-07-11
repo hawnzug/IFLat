@@ -27,8 +27,9 @@ data Node = NAp Addr Addr
           | NNum Int
           | NInd Addr
           | NPrim Name Primitive
+          | NData Int [Addr]
 
-data Primitive = Neg | Add | Sub | Mul | Div
+data Primitive = Neg | Add | Sub | Mul | Div | PrimConstr Int Int
 
 type TiGlobals = ASSOC Name Addr
 type TiStats = (TiSteps,TiScReducs,TiPrReducs,TiMaxStack)
@@ -110,6 +111,7 @@ tiFinal _ = False
 
 isDataNode :: Node -> Bool
 isDataNode (NNum _) = True
+isDataNode (NData _ _) = True
 isDataNode _        = False
 
 step :: TiState -> TiState
@@ -142,6 +144,7 @@ primStep state Add = primArith state (+)
 primStep state Sub = primArith state (-)
 primStep state Mul = primArith state (*)
 primStep state Div = primArith state div
+primStep state (PrimConstr tag arity) = primConstr state tag arity
 
 primArith :: TiState -> (Int -> Int -> Int) -> TiState
 primArith (stack,_,_,_,_) _ | length stack /= 3 = error "arith arguments error"
@@ -168,6 +171,12 @@ primNeg (stack,dump,heap,globals,stats) = if isDataNode node
     where node = hLookup heap arg_addr
           arg_addr = head $ getargs heap stack
           [_,addr] = stack
+
+primConstr :: TiState -> Int -> Int -> TiState
+primConstr (stack,dump,heap,globals,stats) tag arity = (new_stack,dump,new_heap,globals,stats)
+    where args = take arity (getargs heap stack)
+          new_heap = hUpdate heap (stack!!arity) (NData tag args)
+          new_stack = drop arity stack
 
 scStep :: TiState -> Name -> [Name] -> CoreExpr -> TiState
 scStep (stack,dump,heap,globals,stats) name arg_names body =
@@ -199,7 +208,12 @@ instantiateAndUpdate (EAp e1 e2) addr heap env = hUpdate heap2 addr (NAp a1 a2)
 
 instantiateAndUpdate (ELet _ defs body) addr heap env = instantiateAndUpdateLet defs body addr heap env
 
+instantiateAndUpdate (EConstr tag arity) addr heap _ = instantiateAndUpdateConstr tag arity addr heap
+
 instantiateAndUpdate _ _ _ _ = undefined
+
+instantiateAndUpdateConstr :: Int -> Int -> Addr -> TiHeap -> TiHeap
+instantiateAndUpdateConstr tag arity addr heap = hUpdate heap addr (NPrim "Pack" (PrimConstr tag arity))
 
 instantiateAndUpdateLet :: [(Name, CoreExpr)] -> CoreExpr -> Addr -> TiHeap -> TiGlobals -> TiHeap
 instantiateAndUpdateLet defs body addr heap env = instantiateAndUpdate body addr new_heap new_env
@@ -227,8 +241,9 @@ instantiate (ELet _ defs body) heap env = instantiateLet defs body heap env
 
 instantiate _ _ _ = undefined
 
-instantiateConstr :: a -> b -> c -> d -> e
-instantiateConstr _ _ _ _ = error "Cannot instantiate constructors yet"
+instantiateConstr :: Int -> Int -> TiHeap -> TiGlobals -> (TiHeap, Addr)
+instantiateConstr tag arity heap _ = hAlloc heap (NPrim "Pack" (PrimConstr tag arity))
+
 instantiateLet :: [(Name, CoreExpr)] -> CoreExpr -> TiHeap -> TiGlobals -> (TiHeap, Addr)
 instantiateLet defs body heap env = instantiate body new_heap new_env
     where new_env = nenv ++ env
@@ -268,6 +283,7 @@ showNode (NSupercomb name _ _) = iStr ("NSupercomb " ++ name)
 showNode (NNum n) = iStr "NNum " `iAppend` iNum n
 showNode (NInd addr) = iStr "NInd " `iAppend` showAddr addr
 showNode (NPrim name _) = iStr "NPrim " `iAppend` iStr name
+showNode (NData name addrs) = iInterleave (iStr " ") ([iStr "NData", iStr (show name)] ++ map showAddr addrs)
 
 showAddr :: Addr -> Iseq
 showAddr addr = iStr (show addr)
