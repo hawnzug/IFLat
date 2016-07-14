@@ -51,3 +51,18 @@ Exercise for [Implementing Functional Languages: a tutorial](http://research.mic
 - [ ] Exercise 2.19
 - [X] Exercise 2.20
 - [X] Exercise 2.21
+- [ ] Exercise 2.22
+- [ ] Exercise 2.23
+- [ ] Exercise 2.24
+- [ ] Exercise 2.25
+- [ ] Exercise 2.26
+- [ ] Exercise 2.27
+- [ ] Exercise 2.28
+- [ ] Exercise 2.29
+- [ ] Exercise 2.30
+- [ ] Exercise 2.31
+- [ ] Exercise 2.32
+- [ ] Exercise 2.33
+- [ ] Exercise 2.34
+- [ ] Exercise 2.35
+- [ ] Exercise 2.36
