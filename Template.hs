@@ -29,7 +29,11 @@ data Node = NAp Addr Addr
           | NPrim Name Primitive
           | NData Int [Addr]
 
-data Primitive = Neg | Add | Sub | Mul | Div | PrimConstr Int Int | If
+data Primitive = Neg
+               | Add | Sub | Mul | Div
+               | PrimConstr Int Int
+               | If
+               | Greater | GreaterEq | Less | LessEq | Equal | NotEq
 
 type TiGlobals = ASSOC Name Addr
 type TiStats = (TiSteps,TiScReducs,TiPrReducs,TiMaxStack)
@@ -91,6 +95,12 @@ primitives = [("negate", Neg)
              ,("*", Mul)
              ,("/", Div)
              ,("if", If)
+             ,(">", Greater)
+             ,(">=", GreaterEq)
+             ,("<", Less)
+             ,("<=", LessEq)
+             ,("==", Equal)
+             ,("!=", NotEq)
              ]
 
 allocatePrim :: TiHeap -> (Name, Primitive) -> (TiHeap, (Name, Addr))
@@ -157,6 +167,12 @@ primStep state Mul = primArith state (*)
 primStep state Div = primArith state div
 primStep state (PrimConstr tag arity) = primConstr state tag arity
 primStep state If = primIf state
+primStep state Greater = primComp state (>)
+primStep state GreaterEq = primComp state (>=)
+primStep state Less = primComp state (<)
+primStep state LessEq = primComp state (<=)
+primStep state Equal = primComp state (==)
+primStep state NotEq = primComp state (/=)
 
 primIf :: TiState -> TiState
 primIf (stack,_,_,_,_) | length stack < 4 = error "if: arguments error"
@@ -174,12 +190,10 @@ primIf (stack,dump,heap,globals,stats)
         cond_addr:arg1_addr:arg2_addr:_ = getargs heap stack
         _:_:_:top_addr:old = stack
 
-primArith :: TiState -> (Int -> Int -> Int) -> TiState
-primArith (stack,_,_,_,_) _ | length stack /= 3 = error "arith arguments error"
-primArith (stack,dump,heap,globals,stats) arithOp
-  | isDataNode node1 && isDataNode node2 = let (NNum num1) = node1
-                                               (NNum num2) = node2
-                                               new_heap = hUpdate heap ap2_addr (NNum (arithOp num1 num2))
+primDyadic :: TiState -> (Node -> Node -> Node) -> TiState
+primDyadic (stack,_,_,_,_) _ | length stack /= 3 = error "arith arguments error"
+primDyadic (stack,dump,heap,globals,stats) nodeOp
+  | isDataNode node1 && isDataNode node2 = let new_heap = hUpdate heap ap2_addr (nodeOp node1 node2)
                                             in ([ap2_addr],dump,new_heap,globals,stats)
   | not (isDataNode node1) = ([arg1_addr],[ap1_addr,ap2_addr]:dump,heap,globals,stats)
   | otherwise = ([arg2_addr],[ap2_addr]:dump,heap,globals,stats)
@@ -187,6 +201,16 @@ primArith (stack,dump,heap,globals,stats) arithOp
         node2 = hLookup heap arg2_addr
         [arg1_addr,arg2_addr] = getargs heap stack
         [_,ap1_addr,ap2_addr] = stack
+
+primArith :: TiState -> (Int -> Int -> Int) -> TiState
+primArith state arithOp = primDyadic state nodeOp
+    where nodeOp (NNum a) (NNum b) = NNum (arithOp a b)
+          nodeOp _ _ = error "arith: arguments should be number"
+
+primComp :: TiState -> (Int -> Int -> Bool) -> TiState
+primComp state compOp = primDyadic state nodeOp
+    where nodeOp (NNum a) (NNum b) = NData (if compOp a b then 2 else 1) []
+          nodeOp _ _ = error "comp: arguments should be number"
 
 primNeg :: TiState -> TiState
 primNeg (stack,_,_,_,_) | length stack /= 2 = error "negation arguments error"
