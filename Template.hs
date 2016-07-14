@@ -29,7 +29,7 @@ data Node = NAp Addr Addr
           | NPrim Name Primitive
           | NData Int [Addr]
 
-data Primitive = Neg | Add | Sub | Mul | Div | PrimConstr Int Int
+data Primitive = Neg | Add | Sub | Mul | Div | PrimConstr Int Int | If
 
 type TiGlobals = ASSOC Name Addr
 type TiStats = (TiSteps,TiScReducs,TiPrReducs,TiMaxStack)
@@ -72,7 +72,12 @@ compile program = (initial_stack, initialTiDump, initial_heap, globals, tiStatIn
           address_of_main = aLookup globals "main" (error "main is not defined")
 
 extraPreludeDefs :: CoreProgram
-extraPreludeDefs = []
+extraPreludeDefs = [("False", [], EConstr 1 0)
+                   ,("True", [], EConstr 2 0)
+                   ,("and", ["x","y"], EAp (EAp (EAp (EVar "if") (EVar "x")) (EVar "y")) (EVar "False"))
+                   ,("or", ["x","y"], EAp (EAp (EAp (EVar "if") (EVar "x")) (EVar "True")) (EVar "y"))
+                   ,("not", ["x"], EAp (EAp (EAp (EVar "if") (EVar "x")) (EVar "False")) (EVar "True"))
+                   ]
 
 buildInitialHeap :: [CoreScDefn] -> (TiHeap, TiGlobals)
 buildInitialHeap sc_defs = (heap2, sc_addrs ++ prim_addrs)
@@ -80,11 +85,12 @@ buildInitialHeap sc_defs = (heap2, sc_addrs ++ prim_addrs)
           (heap2, prim_addrs) = mapAccuml allocatePrim heap1 primitives
 
 primitives :: ASSOC Name Primitive
-primitives = [ ("negate", Neg),
-               ("+", Add),
-               ("-", Sub),
-               ("*", Mul),
-               ("/", Div)
+primitives = [("negate", Neg)
+             ,("+", Add)
+             ,("-", Sub)
+             ,("*", Mul)
+             ,("/", Div)
+             ,("if", If)
              ]
 
 allocatePrim :: TiHeap -> (Name, Primitive) -> (TiHeap, (Name, Addr))
@@ -117,15 +123,20 @@ isDataNode _        = False
 step :: TiState -> TiState
 step state = dispatch (hLookup heap (head stack))
     where (stack,_,heap,_,_) = state
-          dispatch (NNum n) = numStep state n
+          dispatch (NNum _) = numStep state
           dispatch (NAp a1 a2) = apStep state a1 a2
           dispatch (NSupercomb sc args body) = scStep state sc args body
           dispatch (NInd addr) = indStep state addr
           dispatch (NPrim _ prim) = primStep state prim
+          dispatch (NData _ _) = dataStep state
 
-numStep :: TiState -> Int -> TiState
-numStep (_,old_stack:dump,heap,globals,stats) _ = (old_stack,dump,heap,globals,stats)
-numStep _ _ = error "Number applied as a function!"
+numStep :: TiState -> TiState
+numStep (_,old_stack:dump,heap,globals,stats) = (old_stack,dump,heap,globals,stats)
+numStep _ = error "Number applied as a function!"
+
+dataStep :: TiState -> TiState
+dataStep (_,old_stack:dump,heap,globals,stats) = (old_stack,dump,heap,globals,stats)
+dataStep _ = error "Data applied as a function!"
 
 apStep :: TiState -> Addr -> Addr -> TiState
 apStep (stack,dump,heap,globals,stats) a1 a2 = case hLookup heap a2 of
@@ -145,6 +156,23 @@ primStep state Sub = primArith state (-)
 primStep state Mul = primArith state (*)
 primStep state Div = primArith state div
 primStep state (PrimConstr tag arity) = primConstr state tag arity
+primStep state If = primIf state
+
+primIf :: TiState -> TiState
+primIf (stack,_,_,_,_) | length stack < 4 = error "if: arguments error"
+primIf (stack,dump,heap,globals,stats)
+  | isDataNode cond = case cond of
+                        NData 2 [] -> let new_heap = hUpdate heap top_addr node1
+                                       in (top_addr:old,dump,new_heap,globals,stats)
+                        NData 1 [] -> let new_heap = hUpdate heap top_addr node2
+                                       in (top_addr:old,dump,new_heap,globals,stats)
+                        _ -> error "if: condition needs to be a bool"
+  | otherwise = ([cond_addr],stack:dump,heap,globals,stats)
+  where node1 = hLookup heap arg1_addr
+        node2 = hLookup heap arg2_addr
+        cond = hLookup heap cond_addr
+        cond_addr:arg1_addr:arg2_addr:_ = getargs heap stack
+        _:_:_:top_addr:old = stack
 
 primArith :: TiState -> (Int -> Int -> Int) -> TiState
 primArith (stack,_,_,_,_) _ | length stack /= 3 = error "arith arguments error"
@@ -162,7 +190,6 @@ primArith (stack,dump,heap,globals,stats) arithOp
 
 primNeg :: TiState -> TiState
 primNeg (stack,_,_,_,_) | length stack /= 2 = error "negation arguments error"
-
 primNeg (stack,dump,heap,globals,stats) = if isDataNode node
                                              then  let (NNum num) = node
                                                        new_heap = hUpdate heap addr (NNum (-num))
