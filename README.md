@@ -29,7 +29,6 @@ Exercise for [Implementing Functional Languages: a tutorial](http://research.mic
 - [ ] Exercise 1.22
 - [X] Exercise 1.23
 - [X] Exercise 1.24
-
 - [X] Exercise 2.1
 - [X] Exercise 2.2
 - [X] Exercise 2.3
@@ -51,7 +50,7 @@ Exercise for [Implementing Functional Languages: a tutorial](http://research.mic
 - [ ] Exercise 2.19
 - [X] Exercise 2.20
 - [X] Exercise 2.21
-- [ ] Exercise 2.22
+- [X] Exercise 2.22
 - [ ] Exercise 2.23
 - [ ] Exercise 2.24
 - [ ] Exercise 2.25

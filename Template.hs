@@ -34,6 +34,7 @@ data Primitive = Neg
                | PrimConstr Int Int
                | If
                | Greater | GreaterEq | Less | LessEq | Equal | NotEq
+               | PrimCasePair
 
 type TiGlobals = ASSOC Name Addr
 type TiStats = (TiSteps,TiScReducs,TiPrReducs,TiMaxStack)
@@ -81,6 +82,9 @@ extraPreludeDefs = [("False", [], EConstr 1 0)
                    ,("and", ["x","y"], EAp (EAp (EAp (EVar "if") (EVar "x")) (EVar "y")) (EVar "False"))
                    ,("or", ["x","y"], EAp (EAp (EAp (EVar "if") (EVar "x")) (EVar "True")) (EVar "y"))
                    ,("not", ["x"], EAp (EAp (EAp (EVar "if") (EVar "x")) (EVar "False")) (EVar "True"))
+                   ,("MkPair", [], EConstr 3 2)
+                   ,("fst", ["p"], EAp (EAp (EVar "casePair") (EVar "p")) (EVar "K"))
+                   ,("snd", ["p"], EAp (EAp (EVar "casePair") (EVar "p")) (EVar "K1"))
                    ]
 
 buildInitialHeap :: [CoreScDefn] -> (TiHeap, TiGlobals)
@@ -101,6 +105,7 @@ primitives = [("negate", Neg)
              ,("<=", LessEq)
              ,("==", Equal)
              ,("!=", NotEq)
+             ,("casePair", PrimCasePair)
              ]
 
 allocatePrim :: TiHeap -> (Name, Primitive) -> (TiHeap, (Name, Addr))
@@ -173,22 +178,37 @@ primStep state Less = primComp state (<)
 primStep state LessEq = primComp state (<=)
 primStep state Equal = primComp state (==)
 primStep state NotEq = primComp state (/=)
+primStep state PrimCasePair = primCasePair state
 
 primIf :: TiState -> TiState
 primIf (stack,_,_,_,_) | length stack < 4 = error "if: arguments error"
 primIf (stack,dump,heap,globals,stats)
-  | isDataNode cond = case cond of
-                        NData 2 [] -> let new_heap = hUpdate heap top_addr node1
-                                       in (top_addr:old,dump,new_heap,globals,stats)
-                        NData 1 [] -> let new_heap = hUpdate heap top_addr node2
-                                       in (top_addr:old,dump,new_heap,globals,stats)
-                        _ -> error "if: condition needs to be a bool"
+  | isDataNode cond = let new_heap = hUpdate heap top_addr node
+                          node = case cond of
+                                   NData 2 [] -> node1
+                                   NData 1 [] -> node2
+                                   _ -> error "if: condition needs to be a bool"
+                        in (top_addr:old,dump,new_heap,globals,stats)
   | otherwise = ([cond_addr],stack:dump,heap,globals,stats)
   where node1 = hLookup heap arg1_addr
         node2 = hLookup heap arg2_addr
         cond = hLookup heap cond_addr
         cond_addr:arg1_addr:arg2_addr:_ = getargs heap stack
         _:_:_:top_addr:old = stack
+
+primCasePair :: TiState -> TiState
+primCasePair (stack,_,_,_,_) | length stack < 3 = error "if: arguments error"
+primCasePair (stack,dump,heap,globals,stats)
+  | isDataNode pair = case pair of
+                        NData 3 [a,b] -> let (heap1,addr1) = hAlloc heap (NAp func_addr a)
+                                             heap2 = hUpdate heap1 top_addr (NAp addr1 b)
+                                          in (addr1:top_addr:old,dump,heap2,globals,stats)
+                        _             -> error "casePair: need a pair"
+  | otherwise = ([pair_addr],[top_addr]:dump,heap,globals,stats)
+  where --func = hLookup heap func_addr
+        pair = hLookup heap pair_addr
+        pair_addr:func_addr:_ = getargs heap stack
+        _:_:top_addr:old = stack
 
 primDyadic :: TiState -> (Node -> Node -> Node) -> TiState
 primDyadic (stack,_,_,_,_) _ | length stack /= 3 = error "arith arguments error"
@@ -234,10 +254,7 @@ scStep (stack,dump,heap,globals,stats) name arg_names body =
     if length arg_names + 1 > length stack
        then error (name ++ " is applied to too few arguments!")
        else (new_stack,dump,new_heap,globals,tiStatIncScReducs stats)
-           where -- new_stack = result_addr : drop (length arg_names + 1) stack
-                 -- (new_heap, result_addr) = instantiate body heap env
-                 -- update_heap = hUpdate new_heap (head (drop (length arg_names) stack)) (NInd result_addr)
-                 env = arg_bindings ++ globals
+           where env = arg_bindings ++ globals
                  arg_bindings = zip arg_names (getargs heap stack)
                  new_stack = drop (length arg_names) stack
                  new_heap = instantiateAndUpdate body (head new_stack) heap env
