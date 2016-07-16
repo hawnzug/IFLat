@@ -6,21 +6,16 @@ import Parser
 import Pretty
 import Prld
 
-runProg :: String -> String
-runProg = showResults . eval . compile . parse
-
-parse :: String -> CoreProgram
-parse s = fst $ head $ runParser pProgram (clex 0 s)
-
 type TiState = (TiStack, TiDump, TiHeap, TiGlobals, TiStats)
 type TiStack = [Addr]
-
 type TiDump = [TiStack]
-
-initialTiDump :: TiDump
-initialTiDump = []
-
 type TiHeap = Heap Node
+type TiGlobals = ASSOC Name Addr
+type TiStats = (TiSteps,TiScReducs,TiPrReducs,TiMaxStack)
+type TiSteps = Int
+type TiScReducs = Int
+type TiPrReducs = Int
+type TiMaxStack = Int
 
 data Node = NAp Addr Addr
           | NSupercomb Name [Name] CoreExpr
@@ -28,6 +23,7 @@ data Node = NAp Addr Addr
           | NInd Addr
           | NPrim Name Primitive
           | NData Int [Addr]
+          | NMarked Node
 
 data Primitive = Neg
                | Add | Sub | Mul | Div
@@ -36,12 +32,14 @@ data Primitive = Neg
                | Greater | GreaterEq | Less | LessEq | Equal | NotEq
                | PrimCasePair
 
-type TiGlobals = ASSOC Name Addr
-type TiStats = (TiSteps,TiScReducs,TiPrReducs,TiMaxStack)
-type TiSteps = Int
-type TiScReducs = Int
-type TiPrReducs = Int
-type TiMaxStack = Int
+initialTiDump :: TiDump
+initialTiDump = []
+
+runProg :: String -> String
+runProg = showResults . eval . compile . parse
+
+parse :: String -> CoreProgram
+parse s = fst $ head $ runParser pProgram (clex 0 s)
 
 tiStatInitial :: TiStats
 tiStatInitial = (0,0,0,1)
@@ -67,7 +65,7 @@ tiStatGetMaxStack :: TiStats -> Int
 tiStatGetMaxStack (_,_,_,d) = d
 
 applyToStats :: (TiStats -> TiStats) -> TiState -> TiState
-applyToStats f (stack, dump, heap, sc_defs, stats) = (stack, dump, heap, sc_defs, f stats)
+applyToStats f (stack,dump,heap,sc_defs,stats) = (stack,dump,heap,sc_defs,f stats)
 
 compile :: CoreProgram -> TiState
 compile program = (initial_stack, initialTiDump, initial_heap, globals, tiStatInitial)
@@ -94,17 +92,9 @@ buildInitialHeap sc_defs = (heap2, sc_addrs ++ prim_addrs)
 
 primitives :: ASSOC Name Primitive
 primitives = [("negate", Neg)
-             ,("+", Add)
-             ,("-", Sub)
-             ,("*", Mul)
-             ,("/", Div)
+             ,("+", Add) ,("-", Sub) ,("*", Mul) ,("/", Div)
              ,("if", If)
-             ,(">", Greater)
-             ,(">=", GreaterEq)
-             ,("<", Less)
-             ,("<=", LessEq)
-             ,("==", Equal)
-             ,("!=", NotEq)
+             ,(">", Greater) ,(">=", GreaterEq) ,("<", Less) ,("<=", LessEq) ,("==", Equal) ,("!=", NotEq)
              ,("casePair", PrimCasePair)
              ]
 
@@ -123,7 +113,7 @@ eval state = state : rest_states
           next_state = doAdmin (step state)
 
 doAdmin :: TiState -> TiState
-doAdmin = applyToStats tiStatIncSteps
+doAdmin state@(_,_,heap,_,_) = applyToStats tiStatIncSteps (if hSize heap >= 80 then gc state else state)
 
 tiFinal :: TiState -> Bool
 tiFinal ([],_,_,_,_) = error "Empty stack!"
@@ -135,6 +125,11 @@ isDataNode (NNum _) = True
 isDataNode (NData _ _) = True
 isDataNode _        = False
 
+getargs :: TiHeap -> TiStack -> [Addr]
+getargs _ [] = error "getargs: empty stack"
+getargs heap (_:stack) = map get_arg stack
+    where get_arg addr = arg where (NAp _ arg) = hLookup heap addr
+
 step :: TiState -> TiState
 step state = dispatch (hLookup heap (head stack))
     where (stack,_,heap,_,_) = state
@@ -144,6 +139,7 @@ step state = dispatch (hLookup heap (head stack))
           dispatch (NInd addr) = indStep state addr
           dispatch (NPrim _ prim) = primStep state prim
           dispatch (NData _ _) = dataStep state
+          dispatch (NMarked _) = error "Marked Node"
 
 numStep :: TiState -> TiState
 numStep (_,old_stack:dump,heap,globals,stats) = (old_stack,dump,heap,globals,stats)
@@ -154,11 +150,22 @@ dataStep (_,old_stack:dump,heap,globals,stats) = (old_stack,dump,heap,globals,st
 dataStep _ = error "Data applied as a function!"
 
 apStep :: TiState -> Addr -> Addr -> TiState
-apStep (stack,dump,heap,globals,stats) a1 a2 = case hLookup heap a2 of
-                                                 NInd a3 -> let new_heap = hUpdate heap (head stack) (NAp a1 a3)
-                                                                    in (stack,dump,new_heap,globals,new_stats)
-                                                 _ -> (a1:stack,dump,heap,globals,new_stats)
-        where new_stats = if length stack == tiStatGetMaxStack stats then tiStatIncMaxStack stats else stats
+apStep (stack,dump,heap,globals,stats) a1 a2 =
+    case hLookup heap a2 of
+      NInd a3 -> let new_heap = hUpdate heap (head stack) (NAp a1 a3)
+                  in (stack,dump,new_heap,globals,new_stats)
+      _ -> (a1:stack,dump,heap,globals,new_stats)
+    where new_stats = if length stack == tiStatGetMaxStack stats then tiStatIncMaxStack stats else stats
+
+scStep :: TiState -> Name -> [Name] -> CoreExpr -> TiState
+scStep (stack,dump,heap,globals,stats) name arg_names body =
+    if length arg_names + 1 > length stack
+       then error (name ++ " is applied to too few arguments!")
+       else (new_stack,dump,new_heap,globals,tiStatIncScReducs stats)
+           where env = arg_bindings ++ globals
+                 arg_bindings = zip arg_names (getargs heap stack)
+                 new_stack = drop (length arg_names) stack
+                 new_heap = instantiateAndUpdate body (head new_stack) heap env
 
 indStep :: TiState -> Addr -> TiState
 indStep ([],_,_,_,_) _ = error "indStep: cannot reach here"
@@ -249,35 +256,14 @@ primConstr (stack,dump,heap,globals,stats) tag arity = (new_stack,dump,new_heap,
           new_heap = hUpdate heap (stack!!arity) (NData tag args)
           new_stack = drop arity stack
 
-scStep :: TiState -> Name -> [Name] -> CoreExpr -> TiState
-scStep (stack,dump,heap,globals,stats) name arg_names body =
-    if length arg_names + 1 > length stack
-       then error (name ++ " is applied to too few arguments!")
-       else (new_stack,dump,new_heap,globals,tiStatIncScReducs stats)
-           where env = arg_bindings ++ globals
-                 arg_bindings = zip arg_names (getargs heap stack)
-                 new_stack = drop (length arg_names) stack
-                 new_heap = instantiateAndUpdate body (head new_stack) heap env
-
-getargs :: TiHeap -> TiStack -> [Addr]
-getargs _ [] = error "getargs: empty stack"
-getargs heap (_:stack) = map get_arg stack
-    where get_arg addr = arg where (NAp _ arg) = hLookup heap addr
-
 instantiateAndUpdate :: CoreExpr -> Addr -> TiHeap -> TiGlobals -> TiHeap
-
 instantiateAndUpdate (ENum n) addr heap _ = hUpdate heap addr (NNum n)
-
 instantiateAndUpdate (EVar v) addr heap env = hUpdate heap addr (NInd (aLookup env v (error ("Undefined name " ++ show v))))
-
 instantiateAndUpdate (EAp e1 e2) addr heap env = hUpdate heap2 addr (NAp a1 a2)
     where (heap1, a1) = instantiate e1 heap env
           (heap2, a2) = instantiate e2 heap1 env
-
 instantiateAndUpdate (ELet _ defs body) addr heap env = instantiateAndUpdateLet defs body addr heap env
-
 instantiateAndUpdate (EConstr tag arity) addr heap _ = instantiateAndUpdateConstr tag arity addr heap
-
 instantiateAndUpdate _ _ _ _ = undefined
 
 instantiateAndUpdateConstr :: Int -> Int -> Addr -> TiHeap -> TiHeap
@@ -294,19 +280,13 @@ instantiateAndUpdateDefs defs _ heap env = mapAccuml instantiateDef heap defs
             where (fheap,addr) = instantiate (snd def) h env
 
 instantiate :: CoreExpr -> TiHeap -> TiGlobals -> (TiHeap, Addr)
-
 instantiate (ENum n) heap _ = hAlloc heap (NNum n)
-
 instantiate (EAp e1 e2) heap env = hAlloc heap2 (NAp a1 a2)
     where (heap1, a1) = instantiate e1 heap env
           (heap2, a2) = instantiate e2 heap1 env
-
 instantiate (EVar v) heap env = (heap, aLookup env v (error ("Undefined name " ++ show v)))
-
 instantiate (EConstr tag arity) heap env = instantiateConstr tag arity heap env
-
 instantiate (ELet _ defs body) heap env = instantiateLet defs body heap env
-
 instantiate _ _ _ = undefined
 
 instantiateConstr :: Int -> Int -> TiHeap -> TiGlobals -> (TiHeap, Addr)
@@ -321,7 +301,6 @@ instantiateDefs :: [(Name, CoreExpr)] -> TiHeap -> TiGlobals -> (TiHeap, TiGloba
 instantiateDefs defs heap env = mapAccuml instantiateDef heap defs
     where instantiateDef h def = (fheap, (fst def, addr))
             where (fheap,addr) = instantiate (snd def) h env
-
 
 showResults :: [TiState] -> String
 showResults states = iDisplay (iConcat [ iLayn (map showState states), showStats (last states)])
@@ -340,18 +319,16 @@ showStkNode :: TiHeap -> Node -> Iseq
 showStkNode heap (NAp fun_addr arg_addr) = iConcat [ iStr "NAp ", showFWAddr fun_addr,
                                                      iStr " ", showFWAddr arg_addr, iStr " (",
                                                      showNode (hLookup heap arg_addr), iStr ")" ]
-
 showStkNode _ node = showNode node
 
 showNode :: Node -> Iseq
-showNode (NAp a1 a2) = iConcat [ iStr "NAp ", showAddr a1,
-                                 iStr " ", showAddr a2 ]
-
+showNode (NAp a1 a2) = iConcat [ iStr "NAp ", showAddr a1, iStr " ", showAddr a2 ]
 showNode (NSupercomb name _ _) = iStr ("NSupercomb " ++ name)
 showNode (NNum n) = iStr "NNum " `iAppend` iNum n
 showNode (NInd addr) = iStr "NInd " `iAppend` showAddr addr
 showNode (NPrim name _) = iStr "NPrim " `iAppend` iStr name
 showNode (NData name addrs) = iInterleave (iStr " ") ([iStr "NData", iStr (show name)] ++ map showAddr addrs)
+showNode (NMarked _) = error "Marked Node"
 
 showAddr :: Addr -> Iseq
 showAddr addr = iStr (show addr)
@@ -361,7 +338,7 @@ showFWAddr addr = iStr (replicate (4 - length str) ' ' ++ str)
     where str = show addr
 
 showStats :: TiState -> Iseq
-showStats (_, _, heap, _, stats) = iConcat [ iNewline, iNewline,
+showStats (_,_,heap,_,stats) = iConcat [ iNewline, iNewline,
                                           iStr "Total number of steps = ", iNum (tiStatGetSteps stats), iNewline,
                                           iStr "Total number of heap allocations = ", iNum (getHeapAlloc heapStats), iNewline,
                                           iStr "Total number of heap updates = ", iNum (getHeapUpdate heapStats), iNewline,
@@ -369,3 +346,50 @@ showStats (_, _, heap, _, stats) = iConcat [ iNewline, iNewline,
                                           iStr "Total number of max stack depth = ", iNum (tiStatGetMaxStack stats), iNewline,
                                           iStr "Total number of supercombinator reductions = ", iNum (tiStatGetScReducs stats), iNewline ]
                                               where heapStats = getHeapStats heap
+
+gc :: TiState -> TiState
+gc state = (nstack,ndump,scaned_heap,nglobals,nstats)
+    where scaned_heap = scanHeap nheap
+          (nstack,ndump,nheap,nglobals,nstats) = markFromAll state
+
+markFromAll :: TiState -> TiState
+markFromAll (stack,dump,heap,globals,stats) = (new_stack,new_dump,heap3,new_globals,stats)
+    where (heap1,new_stack) = markFromStack heap stack
+          (heap2,new_dump)  = markFromDump heap1 dump
+          (heap3,new_globals) = markFromGlobals heap2 globals
+
+markFromStack :: TiHeap -> TiStack -> (TiHeap,TiStack)
+markFromStack = mapAccuml markFrom
+
+markFromDump :: TiHeap -> TiDump -> (TiHeap,TiDump)
+markFromDump = mapAccuml markFromStack
+
+markFromGlobals :: TiHeap -> TiGlobals -> (TiHeap,TiGlobals)
+markFromGlobals = mapAccuml help
+    where help h (name,addr) = (new_heap,(name,new_addr)) where (new_heap,new_addr) = markFrom h addr
+
+markFrom :: TiHeap -> Addr -> (TiHeap, Addr)
+markFrom heap addr = case hLookup heap addr of
+                       NMarked _ -> (heap,addr)
+                       node@NSupercomb{} -> (hUpdate heap addr (NMarked node),addr)
+                       node@(NPrim _ _) -> (hUpdate heap addr (NMarked node),addr)
+                       node@(NNum _) -> (hUpdate heap addr (NMarked node),addr)
+                       NInd addr1 -> markFrom heap addr1
+                       --NInd addr1 -> let heap1 = hUpdate heap addr (NMarked (NInd addr1))
+                       --                  (heap2,_) = markFrom heap1 addr1
+                       --               in (heap2,addr)
+                       NAp addr1 addr2 -> let heap1 = hUpdate heap addr (NMarked (NAp nad1 nad2))
+                                              (heap2,nad1) = markFrom heap1 addr1
+                                              (heap3,nad2) = markFrom heap2 addr2
+                                            in (heap3,addr)
+                       (NData tag addrs) -> let heap1 = hUpdate heap addr (NMarked (NData tag new_addrs))
+                                                (new_heap,new_addrs) = mapAccuml markFrom heap1 addrs
+                                                in (new_heap,addr)
+
+scanHeap :: TiHeap -> TiHeap
+scanHeap heap = new_heap
+    where (new_heap,_) = mapAccuml help heap addrs
+          addrs = hAddresses heap
+          help h addr = case hLookup h addr of
+                          NMarked node -> (hUpdate h addr node, addr)
+                          _ -> (hFree h addr, addr)
