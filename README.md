@@ -71,3 +71,8 @@ Exercise for [Implementing Functional Languages: a tutorial](http://research.mic
 - [X] Exercise 3.4
 - [X] Exercise 3.5
 - [ ] Exercise 3.6
+- [X] Exercise 3.7
+- [X] Exercise 3.8
+- [X] Exercise 3.9
+- [X] Exercise 3.10
+- [X] Exercise 3.11

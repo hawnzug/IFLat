@@ -25,7 +25,8 @@ data Instruction = Unwind
                  | Pushint Int
                  | Push Int
                  | Mkap
-                 | Slide Int
+                 | Update Int
+                 | Pop Int
                  deriving (Eq, Show)
 
 type GmStack = [Addr]
@@ -45,6 +46,11 @@ putHeap i (code,stack,_,globals,stats) = (code,stack,i,globals,stats)
 data Node = NNum Int
           | NAp Addr Addr
           | NGlobal Int GmCode
+          | NInd Addr
+
+instance Eq Node where
+    NNum a == NNum b = a == b
+    _ == _ = False
 
 type GmGlobals = ASSOC Name Addr
 getGlobals :: GmState -> GmGlobals
@@ -85,7 +91,8 @@ dispatch (Pushglobal f) = pushglobal f
 dispatch (Pushint n) = pushint n
 dispatch Mkap = mkap
 dispatch (Push n) = push n
-dispatch (Slide n) = slide n
+dispatch (Update n) = update n
+dispatch (Pop n) = pop n
 dispatch Unwind = unwind
 
 pushglobal :: Name -> GmState -> GmState
@@ -114,11 +121,22 @@ slide :: Int -> GmState -> GmState
 slide n state = putStack (a : drop n as) state
     where (a:as) = getStack state
 
+update :: Int -> GmState -> GmState
+update n state = applyToStack tail (putHeap heap' state)
+    where an = stack!!(n+1)
+          a = head stack
+          stack = getStack state
+          heap' = hUpdate (getHeap state) an (NInd a)
+
+pop :: Int -> GmState -> GmState
+pop n = applyToStack (drop n)
+
 unwind :: GmState -> GmState
 unwind state = newState (hLookup heap a)
     where (a:as) = getStack state
           heap = getHeap state
           newState (NNum _) = state
+          newState (NInd i) = putCode [Unwind] (putStack (i:as) state)
           newState (NAp a1 _) = putCode [Unwind] (putStack (a1:a:as) state)
           newState (NGlobal n c) | length as < n = error "Unwinding with too few arguments"
                                  | otherwise = putCode c state
@@ -147,7 +165,8 @@ type GmCompiler = CoreExpr -> GmEnvironment -> GmCode
 type GmEnvironment = ASSOC Name Int
 
 compileR :: GmCompiler
-compileR e env = compileC e env ++ [Slide (length env + 1), Unwind]
+compileR e env = compileC e env ++ [Update d, Pop d, Unwind]
+    where d = length env
 
 compileC :: GmCompiler
 compileC (EVar v) env
@@ -205,6 +224,7 @@ showNode s a (NGlobal _ _) = iConcat [iStr "Global ", iStr v]
     where v = head [n | (n,b) <- getGlobals s, a == b]
 showNode _ _ (NAp a1 a2) = iConcat [iStr "Ap ", iStr (showaddr a1),
                                     iStr " ", iStr (showaddr a2)]
+showNode _ _ (NInd addr) = iConcat [iStr "Indirect ", iStr (showaddr addr)]
 
 showStats :: GmState -> Iseq
 showStats s = iConcat [iStr "Steps taken = ", iNum (statGetSteps (getStats s))]
