@@ -65,3 +65,9 @@ Exercise for [Implementing Functional Languages: a tutorial](http://research.mic
 - [ ] Exercise 2.34
 - [ ] Exercise 2.35
 - [ ] Exercise 2.36
+- [ ] Exercise 3.1
+- [ ] Exercise 3.2
+- [ ] Exercise 3.3
+- [X] Exercise 3.4
+- [X] Exercise 3.5
+- [ ] Exercise 3.6
