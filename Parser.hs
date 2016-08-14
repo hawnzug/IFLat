@@ -54,7 +54,7 @@ instance MonadPlus Parser where
 instance Monad Parser where
     return = pure
     m >>= k = Parser (\x -> [(b, z)|(a, y) <- runParser m x, (b, z) <- runParser (k a) y])
- 
+
 item :: Parser String
 item = Parser (\xs -> case xs of
                       [] -> []
@@ -234,12 +234,3 @@ pLambda = do _ <- pLit "\\"
              _ <- pLit "."
              expr <- pExpr
              return (ELam args expr)
-
-testInput0 :: String
-testInput0 = "f = 3;\ng x y = let z = x in z;\nh x = case (let y = x in y) of\n<1> -> 2;\n<2> -> 5"
-
-testInput1 :: String
-testInput1 = "f x y = case x of\n<1> -> case y of\n<1> -> 1;\n<2> -> 2"
-
-testInput2 :: String
-testInput2 = "x = f (g (h i))"
