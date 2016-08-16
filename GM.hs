@@ -27,6 +27,8 @@ data Instruction = Unwind
                  | Mkap
                  | Update Int
                  | Pop Int
+                 | Slide Int
+                 | Alloc Int
                  deriving (Eq, Show)
 
 type GmStack = [Addr]
@@ -94,6 +96,8 @@ dispatch (Push n) = push n
 dispatch (Update n) = update n
 dispatch (Pop n) = pop n
 dispatch Unwind = unwind
+dispatch (Slide n) = slide n
+dispatch (Alloc n) = alloc n
 
 pushglobal :: Name -> GmState -> GmState
 pushglobal f state = applyToStack (a:) state
@@ -145,6 +149,16 @@ unwind state = newState (hLookup heap a)
           newState (NGlobal n c) | length as < n = error "Unwinding with too few arguments"
                                  | otherwise = putCode c (applyToStack (rearrange n (getHeap state)) state)
 
+alloc :: Int -> GmState -> GmState
+alloc n state = putHeap heap (applyToStack (addrs++) state)
+    where (heap,addrs) = allocNodes n (getHeap state)
+
+allocNodes :: Int -> GmHeap -> (GmHeap, [Addr])
+allocNodes 0 heap = (heap, [])
+allocNodes n heap = (heap2, a:as)
+    where (heap1, as) = allocNodes (n-1) heap
+          (heap2, a) = hAlloc heap1 (NInd hNull)
+
 compile :: CoreProgram -> GmState
 compile program = (initialCode,[],heap,globals,statInitial)
     where (heap,globals) = buildInitialHeap program
@@ -179,7 +193,30 @@ compileC (EVar v) env
   where n = aLookup env v (error "Can't happen")
 compileC (ENum n) _ = [Pushint n]
 compileC (EAp e1 e2) env = compileC e2 env ++ compileC e1 (argOffset 1 env) ++ [Mkap]
+compileC (ELet rec defs e) args | rec = compileLetrec compileC defs e args
+                                | otherwise = compileLet compileC defs e args
 compileC _ _ = error "Todo: compileC"
+
+compileLet :: GmCompiler -> [(Name, CoreExpr)] -> GmCompiler
+compileLet comp defs expr env = compileLet' defs env ++ comp expr env' ++ [Slide (length defs)]
+    where env' = compileArgs defs env
+
+compileLet' :: [(Name, CoreExpr)] -> GmEnvironment -> GmCode
+compileLet' [] _ = []
+compileLet' ((_,expr):defs) env = compileC expr env ++ compileLet' defs (argOffset 1 env)
+
+compileArgs :: [(Name, CoreExpr)] -> GmEnvironment -> GmEnvironment
+compileArgs defs env = zip (map fst defs) [n-1,n-2..0] ++ argOffset n env
+    where n = length defs
+
+compileLetrec :: GmCompiler -> [(Name, CoreExpr)] -> GmCompiler
+compileLetrec comp defs expr env = (Alloc n:compileLetrec' defs env') ++ comp expr env' ++ [Slide n]
+    where n = length defs
+          env' = compileArgs defs env
+
+compileLetrec' :: [(Name, CoreExpr)] -> GmEnvironment -> GmCode
+compileLetrec' defs env = concat [compileC expr env ++ [Update i] | (expr, i) <- zip (map snd defs) [n-1,n-2..0]]
+    where n = length defs
 
 argOffset :: Int -> GmEnvironment -> GmEnvironment
 argOffset n env = [(v,m+n) | (v,m) <- env]
